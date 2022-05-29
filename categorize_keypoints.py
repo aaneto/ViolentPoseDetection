@@ -5,15 +5,22 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import minmax_scale
 
 from collect_keypoints import NUM_KPTS
 
 class KeypointsDataset(Dataset):
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, training):
         X = []
         Y = []
-
+        i = -1
         for filename in glob.glob("./Poses/**/*.json"):
+            i += 1
+            if i % 2 == 0 and training:
+                continue
+            elif i % 2 != 0 and not training:
+                continue
+
             with open(filename, "r") as fp:
                 data = json.load(fp)
             for keypoints in data["keypoints"]:
@@ -25,7 +32,7 @@ class KeypointsDataset(Dataset):
                     X.append(points)
                     Y.append([1.0 * float(data["tag"] == "Roubo"), ])
 
-        X = numpy.array(X)
+        X = minmax_scale(numpy.array(X))
         Y = numpy.array(Y)
 
         self.X = torch.as_tensor(X).float()
@@ -40,10 +47,9 @@ class KeypointsDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 batch_size = 64
-
 # Create data loaders.
-train_dataloader = DataLoader(KeypointsDataset("root"), batch_size=batch_size)
-test_dataloader = DataLoader(KeypointsDataset("root"), batch_size=batch_size)
+train_dataloader = DataLoader(KeypointsDataset("root", True), batch_size=batch_size)
+test_dataloader = DataLoader(KeypointsDataset("root", False), batch_size=batch_size)
 
 for X, y in test_dataloader:
     print(f"Shape of X [N, C, H, W]: {X.shape}")
@@ -57,28 +63,30 @@ print(f"Using {device} device")
 class NeuralNetwork(nn.Module):
     def __init__(self):
         super(NeuralNetwork, self).__init__()
-        self.flatten = nn.Flatten()
-        self.linear_relu_stack = nn.Sequential(
-            nn.Linear(NUM_KPTS * 2, 50),
-            nn.Linear(50, 1),
+        self.stack = nn.Sequential(
+            nn.Linear(NUM_KPTS * 2, 300),
+            nn.Sigmoid(),
+            nn.Linear(300, 30),
+            nn.Linear(30, 10),
+            nn.Sigmoid(),
+            nn.Linear(10, 1),
             nn.Sigmoid(),
         )
 
     def forward(self, x):
-        x = self.flatten(x)
-        logits = self.linear_relu_stack(x)
+        logits = self.stack(x)
         return logits
+
 
 model = NeuralNetwork().to(device)
 print(model)
 
 loss_fn = nn.BCELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=5e-1)
+optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
 
 def train(dataloader, model, loss_fn, optimizer):
-    size = len(dataloader.dataset)
     model.train()
-    for batch, (X, y) in enumerate(dataloader):
+    for _, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
 
         pred = model(X)
@@ -86,10 +94,6 @@ def train(dataloader, model, loss_fn, optimizer):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
-        if batch % 100 == 0:
-            loss, current = loss.item(), batch * len(X)
-            print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
 
 def test(dataloader, model, loss_fn):
     size = len(dataloader.dataset)
@@ -101,16 +105,21 @@ def test(dataloader, model, loss_fn):
             X, y = X.to(device), y.to(device)
             pred = model(X)
             test_loss += loss_fn(pred, y).item()
-            print("PRED", pred.argmax(1))
-            print("Y", y.flatten())
-            correct += (pred.argmax(1) == y.flatten()).type(torch.float).sum().item()
+            correct += (torch.round(pred) == y).type(torch.float).sum().item()
     test_loss /= num_batches
     correct /= size
-    print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
 
-epochs = 20
+    return correct, test_loss
+
+epochs = 200
 for t in range(epochs):
-    print(f"Epoch {t+1}\n-------------------------------")
     train(train_dataloader, model, loss_fn, optimizer)
-    test(test_dataloader, model, loss_fn)
-print("Done!")
+    correct, loss = test(test_dataloader, model, loss_fn)
+
+print(f"Accuracy after {epochs} epochs: {int(100.0 * correct)}%")
+
+with torch.no_grad():
+    x, y  = next(iter(test_dataloader))
+    x, y = x.to(device), y.to(device)
+    pred = model(x)
+    print(torch.round(pred.flatten()), y.flatten())
