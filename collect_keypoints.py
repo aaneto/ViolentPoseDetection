@@ -41,7 +41,7 @@ def get_3rd_point(a, b):
     direct = a - b
     return b + numpy.array([-direct[1], direct[0]], dtype=numpy.float32)
 
-def get_person_detection_boxes(model, img, threshold=0.5):
+def get_person_detection_boxes(model, img, threshold):
     pred = model(img)
     pred_classes = [COCO_INSTANCE_CATEGORY_NAMES[i]
                     for i in list(pred[0]['labels'].cpu().numpy())]  # Get the Prediction Score
@@ -307,7 +307,7 @@ def process_image(image_path):
     img_tensor = torch.from_numpy(img_rgb / 255.).permute(2, 0, 1).float().to(CTX)
     input.append(img_tensor)
 
-    pred_boxes = get_person_detection_boxes(box_model, input, threshold=0.9)
+    pred_boxes = get_person_detection_boxes(box_model, input, 0.7)
     keypoints = []
 
     if len(pred_boxes) >= 1:
@@ -334,6 +334,7 @@ def save_metadata(image_folder):
         pose_image_path = f"PoseImages/{image_folder}/{image_name}.png"
         pose_json_path = f"Poses/{image_folder}/{image_name}.json"
         f.savefig(pose_image_path)
+        plt.cla()
 
         with open(pose_json_path, "w") as fp:
             json.dump({ "keypoints": kpts, "tag": image_folder }, fp, indent=4)
